@@ -4,6 +4,7 @@ local hdf5 = require 'hdf5'
 require 's2sa.LSTM'
 
 local Sequencer = torch.class('Sequencer')
+require 's2sa.DataParallelTableReplica'
 
 function Sequencer:__init(args, opt)
   self.network = self:build_network(args.vocab_size, opt)
@@ -63,7 +64,9 @@ function Sequencer:build_network(vocab_size, opt)
 
   table.insert(outputs, hidden_states) -- a.k.a context for the encoder
 
-  return nn.gModule(inputs, outputs)
+  local model=nn.gModule(inputs, outputs)
+  local dpt = nn.DataParallelTableReplica(1, true, false):add(model, {1,2})
+  return dpt
 end
 
 function Sequencer:forget()
