@@ -65,7 +65,13 @@ function Sequencer:build_network(vocab_size, opt)
   table.insert(outputs, hidden_states) -- a.k.a context for the encoder
 
   local model=nn.gModule(inputs, outputs)
-  local dpt = nn.DataParallelTableReplica(1, true, false):add(model, {1,2})
+  local gpus = torch.range(1, opt.ngpu):totable()
+  local dpt = nn.DataParallelTableReplica(1, true, true):add(model, gpus)
+  dpt:threads(function()
+        require 'nngraph'
+        require 's2sa.LSTM'
+        local cudnn = require 'cudnn'
+        end)
   return dpt
 end
 

@@ -1,13 +1,14 @@
 require 'torch'
+cuda = require 's2sa.cuda'
 
 local Bookkeeper = torch.class("Bookkeeper")
 
-function Bookkeeper:__init(args)
+function Bookkeeper:__init(args, opt)
   self.learning_rate = args.learning_rate or 0
   self.data_size = args.data_size or 0
   self.epoch = args.epoch or 0
-
   self.timer = torch.Timer()
+  self.gpuid = opt.gpuid
 
   self.train_nonzeros = 0
   self.train_loss = 0
@@ -31,8 +32,10 @@ function Bookkeeper:log(batch_index)
                                  (self.num_words_target + self.num_words_source) / time_taken,
                                  self.num_words_source / time_taken,
                                  self.num_words_target / time_taken)
-  stats = stats .. string.format('PPL %.2f',
+  stats = stats .. string.format('PPL %.2f ; ',
                                  math.exp(self.train_loss/self.train_nonzeros))
+  local freeMem = cuda.memoryUsage()
+  stats = stats .. string.format('FMEM %d', freeMem)
 
   print(stats)
 end

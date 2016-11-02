@@ -60,6 +60,7 @@ cmd:text("")
 
 -- GPU
 cmd:option('-gpuid', -1, [[Which gpu to use (1-indexed). < 1 = use CPU]])
+cmd:option('-ngpu', 1, [[how many gpu to use in data parallelism]])
 cmd:option('-fallback_to_cpu', false, [[Fallback to CPU if no GPU available or can not use cuda/cudnn]])
 cmd:option('-cudnn', false, [[Whether to use cudnn or not]])
 
@@ -103,7 +104,7 @@ local function train(train_data, valid_data, encoder, decoder, generator)
       learning_rate = optim:get_rate(),
       data_size = #data,
       epoch = epoch
-    })
+    }, opt)
 
     local batch_order = torch.randperm(#data) -- shuffle mini batch order
 
@@ -172,7 +173,7 @@ local function train(train_data, valid_data, encoder, decoder, generator)
     end
   end
   -- save final model
-  save_model(string.format('%s_final.t7', opt.savefile), {encoder, decoder, generator}, opt, true)
+  --save_model(string.format('%s_final.t7', opt.savefile), {encoder, decoder, generator}, opt, true)
 end
 
 local function main()

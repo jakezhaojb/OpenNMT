@@ -41,7 +41,7 @@ local function waitForDevice(dst, src)
    end
 end
 
-function DataParallelTableReplica:__init(dimension, flattenParams, usenccl, doReplica)
+function DataParallelTableReplica:__init(dimension, flattenParams, usenccl)
    parent.__init(self)
    if not dimension then
       error "must specify a dimension!"
@@ -54,12 +54,9 @@ function DataParallelTableReplica:__init(dimension, flattenParams, usenccl, doRe
    self.gradOutputGpu = {} -- gradOutputs for each gpu
    self.outputGpu = {} -- outputs for each gpu
    self.gradInputGpu = {} -- gradInput for each gpu
-   self.replModules = {} -- replicated modules - will only work for one single module
    self.flattenedParams = nil -- flattened parameters for each gpu
    self.flattenParams = flattenParams or false
    self.usenccl = false
-   self.doReplica = doReplica or false
-   self.needsReplication = true
    self.needsSync = false
    self.impl = Impls.Basic(self)
    if usenccl then
@@ -69,10 +66,6 @@ function DataParallelTableReplica:__init(dimension, flattenParams, usenccl, doRe
          print("warning: could not load nccl, falling back to default communication")
       end
    end
-end
-
-function DataParallelTableReplica:doReplicate(doReplica)
-   self.doReplica = doReplica
 end
 
 function DataParallelTableReplica:add(module, gpus)
@@ -132,35 +125,6 @@ function DataParallelTableReplica:flattenParameters()
    self.flattenParams = true
 end
 
--- replicates completely the module on all GPUs to handle internal status (for instance LSTM)
--- works only for single module
-function DataParallelTableReplica:replicate()
-   if self.doReplica then
-      if #self.modules ~= 1 then
-         error("cannot replicate multiple modules")
-      end
-
-      local mem = torch.MemoryFile("w"):binary()
-      mem:writeObject(self.modules[1])
-      self.replicas = { self.modules[1] }
-
-      local prevGpuid = cutorch.getDevice()
-
-      for i = 2,#self.gpuAssignments do
-         print("replicate module on GPU",i)
-         local reader = torch.MemoryFile(mem:storage(), "r"):binary()
-         local replica = reader:readObject()
-         reader:close()
-
-         cutorch.setDevice(gpuAssignments[i])
-         replica:cuda()
-         table.insert(replicas, replica)
-      end
-
-      cutorch.setDevice(prevGpuid)
-   end
-end
-
 function DataParallelTableReplica:getParameters()
    self:flattenParameters()
    return table.unpack(self.flattenedParams[1])
@@ -179,7 +143,6 @@ local function hasFlattenedParameters(self)
 end
 
 function DataParallelTableReplica:training()
-   self:replicate()
    self.impl:exec(function(module)
       module:training()
    end)
@@ -187,7 +150,6 @@ function DataParallelTableReplica:training()
 end
 
 function DataParallelTableReplica:evaluate()
-   self:replicate()
    self.impl:exec(function(module)
       module:evaluate()
    end)
@@ -269,14 +231,10 @@ function DataParallelTableReplica:__backward(method, input, gradOutput, scale)
       self:_distribute(self.gradOutputGpu, gradOutput)
 
       self.gradInputGpu = self.impl:exec(function(m, i)
-         if torch.isTensor(inputGpu[i]) and inputGpu[i]:numel() == 0 then
-            return torch.CudaTensor()
+         if not _hasData(inputGpu[i]) then
+            return inputGpu[i]
          else
-            if _hasData(inputGpu[i]) then
-               return m[method](m, inputGpu[i], gradOutputGpu[i], scale)
-            else
-               return inputGpu[i]
-            end
+            return m[method](m, inputGpu[i], gradOutputGpu[i], scale)
          end
       end)
 
@@ -288,14 +246,10 @@ function DataParallelTableReplica:__backward(method, input, gradOutput, scale)
 
    if method == 'accGradParameters' then
       self.impl:exec(function(m, i)
-         if torch.isTensor(inputGpu[i]) and inputGpu[i]:numel() == 0 then
-            return torch.CudaTensor()
+         if not _hasData(inputGpu[i]) then
+            return inputGpu[i]
          else
-            if _hasData(inputGpu[i]) then
-               return m:accGradParameters(inputGpu[i], gradOutputGpu[i], scale)
-            else
-               return inputGpu[i]
-            end
+            return m:accGradParameters(inputGpu[i], gradOutputGpu[i], scale)
          end
       end)
    end
@@ -678,7 +632,6 @@ function BasicImpl:applyChanges()
       collectgarbage()
       for i=2,#self.dpt.gpuAssignments do
          cutorch.setDevice(self.dpt.gpuAssignments[i])
-         print("clone dpt module to ",self.dpt.gpuAssignments[i])
          table.insert(self.modules, self.dpt.modules[1]:clone())
       end
       cutorch.setDevice(prevGpuid)
