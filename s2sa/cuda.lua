@@ -34,18 +34,17 @@ function Cuda.init(opt)
   end
 end
 
-function Cuda.convert(obj, i)
+function Cuda.convert(obj, gpuIdx)
   if Cuda.activated then
-    cutorch.setDevice(i)
-    if type(obj) == 'table' then
+    cutorch.setDevice(gpuIdx)
+    if torch.typename(obj) == nil and type(obj) == 'table' then
       for i = 1, #obj do
-        obj[i]:cuda()
+        obj[i] = Cuda.convert(obj[i], gpuIdx)
       end
-    else
-      return obj:cuda()
+    elseif obj.cuda ~= nil then
+        return obj:cuda()
     end
   end
-
   return obj
 end
 

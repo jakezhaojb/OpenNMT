@@ -1,7 +1,5 @@
 require 'torch'
 
-local table_utils = require 's2sa.table_utils'
-
 local Optim = torch.class("Optim")
 
 function Optim:__init(learning_rate, lr_decay, start_decay_at)
@@ -28,8 +26,6 @@ function Optim:update_params(params, grad_params, max_grad_norm)
     end
     params[j]:add(grad_params[j]:mul(-self:get_rate()))
   end
-
-  table_utils.zero(grad_params)
 end
 
 -- decay learning rate if val perf does not improve or we hit the start_decay_at limit
