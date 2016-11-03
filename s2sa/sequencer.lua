@@ -5,7 +5,7 @@ require 's2sa.LSTM'
 
 local Sequencer = torch.class('Sequencer')
 
-function Sequencer:__init(args, opt)
+function Sequencer:__init(args, opt, i)
   self.network = self:build_network(args.vocab_size, opt)
   self.fix_word_vecs = args.fix_word_vecs
 
@@ -19,7 +19,7 @@ function Sequencer:__init(args, opt)
 
   self.word_vecs.weight[1]:zero()
 
-  local h_init = cuda.convert(torch.zeros(opt.max_batch_size, opt.rnn_size))
+  local h_init = cuda.convert(torch.zeros(opt.max_batch_size, opt.rnn_size), i)
 
   self.init_states = {}
   for _ = 1, opt.num_layers do

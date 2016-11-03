@@ -3,8 +3,8 @@ require 's2sa.sequencer'
 
 local Encoder, Sequencer = torch.class('Encoder', 'Sequencer')
 
-function Encoder:__init(args, opt)
-  Sequencer.__init(self, args, opt)
+function Encoder:__init(args, opt, gpuIdx)
+  Sequencer.__init(self, args, opt, gpuIdx)
 end
 
 function Encoder:forward(batch)

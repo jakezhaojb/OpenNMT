@@ -62,6 +62,7 @@ cmd:text("")
 
 -- GPU
 cmd:option('-gpuid', -1, [[Which gpu to use (1-indexed). < 1 = use CPU]])
+cmd:option('-ngpu', 1, [[How many parallel GPU]])
 cmd:option('-fallback_to_cpu', false, [[Fallback to CPU if no GPU available or can not use cuda/cudnn]])
 cmd:option('-cudnn', false, [[Whether to use cudnn or not]])
 
@@ -74,7 +75,7 @@ cmd:option('-seed', 3435, [[Seed for random initialization]])
 local opt = cmd:parse(arg)
 
 
-local function train(train_data, valid_data, encoder, decoder, generator)
+local function train(train_data, valid_data, encoder, decoder, generator, encoder2, decoder2, generator2)
   local num_params = 0
   local params = {}
   local grad_params = {}
@@ -92,7 +93,22 @@ local function train(train_data, valid_data, encoder, decoder, generator)
     grad_params[i] = gp
   end
 
+  cutorch.setDevice(2)
+  local num_params2 = 0
+  local params2 = {}
+  local grad_params2 = {}
+  local layers2 = {encoder2, decoder2, generator2}
+
+  for i = 1, #layers2 do
+    local p, gp = layers2[i].network:getParameters()
+    num_params2 = num_params2 + p:size(1)
+    params2[i] = p
+    grad_params2[i] = gp
+  end
+  cutorch.setDevice(1)
+
   print("Number of parameters: " .. num_params)
+  print("Number of parameters: " .. num_params2)
 
   local function train_batch(data, epoch, optim, checkpoint)
     local bookkeeper = Bookkeeper.new({
@@ -103,11 +119,13 @@ local function train(train_data, valid_data, encoder, decoder, generator)
 
     local batch_order = torch.randperm(#data) -- shuffle mini batch order
 
-    for i = 1, #data do
+    for i = 1, #data, opt.ngpu do
+      cutorch.setDevice(1)
+
       encoder:forget()
       decoder:forget()
 
-      local batch = data:get_batch(batch_order[i])
+      local batch = data:get_batch(batch_order[i], 1)
 
       -- forward encoder
       local encoder_states, context = encoder:forward(batch)
@@ -126,7 +144,44 @@ local function train(train_data, valid_data, encoder, decoder, generator)
       encoder_grad_output[#encoder_grad_output] = grad_context
       encoder:backward(encoder_grad_output)
 
+      if opt.ngpu == 2 then
+        cutorch.setDevice(2)
+
+        encoder2:forget()
+        decoder2:forget()
+
+        local batch2 = data:get_batch(batch_order[i+1], 2)
+
+        -- forward encoder
+        local encoder_states2, context2 = encoder2:forward(batch2)
+
+        -- forward decoder
+        local decoder_states2, decoder_out2 = decoder2:forward(batch2, encoder_states2)
+
+        -- forward and backward attention and generator
+        local decoder_grad_output2, grad_context2, loss2 = generator:process(batch2, context2, decoder_states2, decoder_out2)
+
+        -- backward decoder
+        local decoder_grad_input2 = decoder2:backward(decoder_grad_output2)
+
+        -- backward encoder
+        local encoder_grad_output2 = decoder_grad_input2
+        encoder_grad_output2[#encoder_grad_output2] = grad_context2
+        encoder2:backward(encoder_grad_output2)
+      end
+
+      cutorch.setDevice(1)
+
+      if opt.ngpu == 2 then
+        for j = 1, #grad_params do
+          grad_params[j]=(grad_params[j]*batch["size"]+grad_params2[j]*batch2["size"])/(batch["size"]+batch2["size"])
+        end
+      end
+
       optim:update_params(params, grad_params, opt.max_grad_norm)
+      if opt.ngpu == 2 then
+        optim:update_params(params2, grad_params, opt.max_grad_norm)
+      end
 
       -- Bookkeeping
       bookkeeper:update(batch, loss)
@@ -189,26 +244,28 @@ local function main()
                       train_data.max_source_length, train_data.max_target_length))
 
   -- Build model
-  local encoder
-  local decoder
-  local generator
+  local encoders = {}
+  local decoders = {}
+  local generators = {}
 
   if opt.train_from:len() == 0 then
-    encoder = Encoder.new({
-      pre_word_vecs = opt.pre_word_vecs_enc,
-      fix_word_vecs = opt.fix_word_vecs_enc,
-      vocab_size = #dataset.src_dict
-    }, opt)
+    for i = 1, 2 do
+      table.insert(encoders, Encoder.new({
+                                pre_word_vecs = opt.pre_word_vecs_enc,
+                                fix_word_vecs = opt.fix_word_vecs_enc,
+                                vocab_size = #dataset.src_dict
+                             }, opt, i))
 
-    decoder = Decoder.new({
-      pre_word_vecs = opt.pre_word_vecs_dec,
-      fix_word_vecs = opt.fix_word_vec,
-      vocab_size = #dataset.targ_dict
-    }, opt)
+      table.insert(decoders, Decoder.new({
+                                pre_word_vecs = opt.pre_word_vecs_dec,
+                                fix_word_vecs = opt.fix_word_vec,
+                                vocab_size = #dataset.targ_dict
+                             }, opt, i))
 
-    generator = Generator.new({
-      vocab_size = #dataset.targ_dict
-    }, opt)
+      table.insert(generators, Generator.new({
+                                  vocab_size = #dataset.targ_dict
+                                }, opt))
+    end
   else
     assert(path.exists(opt.train_from), 'checkpoint path invalid')
     print('loading ' .. opt.train_from .. '...')
@@ -221,11 +278,12 @@ local function main()
     generator = model[3]
   end
 
-  generator:build_criterion(#dataset.targ_dict)
+  for i = 1, 2 do
+    generators[i]:build_criterion(#dataset.targ_dict)
+    cuda.convert({encoders[i].network, decoders[i].network, generators[i].network, generators[i].criterion}, i)
+  end
 
-  cuda.convert({encoder.network, decoder.network, generator.network, generator.criterion})
-
-  train(train_data, valid_data, encoder, decoder, generator)
+  train(train_data, valid_data, encoders[1], decoders[1], generators[1], encoders[2], decoders[2], generators[2])
 end
 
 main()

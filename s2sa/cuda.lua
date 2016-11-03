@@ -18,7 +18,6 @@ function Cuda.init(opt)
         require 'cudnn'
         Cuda.nn = cudnn
       end
-      cutorch.setDevice(opt.gpuid)
       cutorch.manualSeed(opt.seed)
     end)
 
@@ -35,8 +34,9 @@ function Cuda.init(opt)
   end
 end
 
-function Cuda.convert(obj)
+function Cuda.convert(obj, i)
   if Cuda.activated then
+    cutorch.setDevice(i)
     if type(obj) == 'table' then
       for i = 1, #obj do
         obj[i]:cuda()
