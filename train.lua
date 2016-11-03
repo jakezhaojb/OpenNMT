@@ -100,7 +100,7 @@ local function train(train_data, valid_data, encoders, decoders, generators)
   local params2 = {}
   local grad_params2 = {}
 
-  if opt.ngpu == 3 then
+  if opt.ngpu == 2 then
     cutorch.setDevice(1)
     local layers2 = {encoders[2] , decoders[2], generators[2]}
 
@@ -130,23 +130,13 @@ local function train(train_data, valid_data, encoders, decoders, generators)
     local batch_order = torch.randperm(#data) -- shuffle mini batch order
 
     for i = 1, #data, opt.ngpu do
-      cutorch.setDevice(1)
+      batchs = {}
 
+      cutorch.setDevice(1)
       encoders[1]:forget()
       decoders[1]:forget()
-
-      batchs = {}
-      for j = 1, opt.ngpu do
-        batchs[j] = data:get_batch(batch_order[i+j-1], j)
-      end
-
-      cutorch.setDevice(2)
+      batchs[1] = data:get_batch(batch_order[i], 1)
       table_utils.zero(grad_params)
-      -- cutorch.setDevice(2)
-      -- table_utils.zero(grad_params2)
-      cutorch.setDevice(1)
-
-      print(grad_params[1]:getDevice())
 
       -- forward encoder
       local encoder_states, context = encoders[1]:forward(batchs[1])
@@ -165,11 +155,13 @@ local function train(train_data, valid_data, encoders, decoders, generators)
       encoder_grad_output[#encoder_grad_output] = grad_context
       encoders[1]:backward(encoder_grad_output)
 
-      if opt.ngpu == 3 then
+      if opt.ngpu == 2 then
         cutorch.setDevice(2)
 
         encoders[2]:forget()
         decoders[2]:forget()
+        batchs[2] = data:get_batch(batch_order[i+1], 2)
+        table_utils.zero(grad_params2)
 
         -- forward encoder
         local encoder_states2, context2 = encoders[2]:forward(batchs[2])
@@ -187,20 +179,22 @@ local function train(train_data, valid_data, encoders, decoders, generators)
         local encoder_grad_output2 = decoder_grad_input2
         encoder_grad_output2[#encoder_grad_output2] = grad_context2
         encoders[2]:backward(encoder_grad_output2)
-        cutorch.setDevice(1)
       end
 
       if opt.ngpu == 3 then
+        cutorch.setDevice(1)
         for j = 1, #grad_params do
-          grad_params[j]:add(grad_params2[j])
+          local remote_grad_params=grad_params2[j]:clone()
+          grad_params[j]=(grad_params[j]*batchs[1].size+remote_grad_params[j]*batchs[2].size)/(batchs[1].size+batchs[2].size)
         end
       end
 
       optim:update_params(params, grad_params, opt.max_grad_norm)
-      if opt.ngpu == 3 then
+      if opt.ngpu == 2 then
         cutorch.setDevice(2)
-        optim:update_params(params2, grad_params, opt.max_grad_norm)
-        cutorch.setDevice(1)
+        for j = 1, #params do
+          params2[j]:copy(params[j])
+        end
       end
 
       -- Bookkeeping
