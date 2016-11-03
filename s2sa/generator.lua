@@ -24,7 +24,10 @@ local function build_attention(opt)
   local context_output = nn.Tanh()(nn.Linear(opt.rnn_size*2,opt.rnn_size,false)(context_combined))
   context_output = nn.Dropout(opt.dropout, nil, false)(context_output)
 
-  return nn.gModule(inputs, {context_output})
+  local model=nn.gModule(inputs, {context_output})
+  local gpus = torch.range(1, opt.ngpu):totable()
+  local dpt = nn.DataParallelTableReplica(1, true, true):add(model, gpus)
+  return dpt
 end
 
 local function build_network(vocab_size, opt)
