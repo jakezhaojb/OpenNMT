@@ -90,4 +90,37 @@ function data:get_batch(idx, nocuda)
   return batch
 end
 
+-- from nn.DataParallelTable
+local function sliceRange(nElem, idx, splits)
+   local eltsPerMod = nElem / splits
+   local rangeStart = math.ceil((idx - 1) * eltsPerMod) + 1
+   if idx == splits then
+      return rangeStart, nElem - rangeStart + 1
+   else
+      return rangeStart, math.ceil(idx * eltsPerMod) - rangeStart + 1
+   end
+end
+
+
+function data:distribute(batch, count)
+  local batchs = {}
+  for idx = 1, count do
+    local index, size = sliceRange(batch.size, idx, count)
+    if size == 0 then
+      table.insert(batchs, nil)
+    else
+      local b = {}
+      b.size = size
+      b.source_length = batch.source_length
+      b.target_length = batch.target_length
+      b.target_non_zeros = batch.target_non_zeros
+      b.source_input = batch.source_input:narrow(1, index, size)
+      b.target_input = batch.target_input:narrow(1, index, size)
+      b.target_output = batch.target_output:narrow(1, index, size)
+      table.insert(batchs, b)
+    end
+  end
+  return batchs
+end
+
 return data

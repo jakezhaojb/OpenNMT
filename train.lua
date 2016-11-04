@@ -78,9 +78,8 @@ local function train(train_data, valid_data, encoders, decoders, generators)
   local num_params = 0
   local params = {}
   local grad_params = {}
-  local __threadid = 1 -- important to keep for closure when non using threads
 
-  parallel.launch('Initializing parameters', function()
+  parallel.launch('Initializing parameters', function(idx)
     _G.layers = { _G.encoder, _G.decoder, _G.generator}
     _G.params = {}
     _G.grad_params = {}
@@ -92,7 +91,7 @@ local function train(train_data, valid_data, encoders, decoders, generators)
       _G.params[i] = p
       _G.grad_params[i] = gp
     end
-    return __threadid, _G.params, _G.grad_params
+    return idx, _G.params, _G.grad_params
   end, function(id, theparams, thegrad_params)
     params[id]=theparams
     grad_params[id]=thegrad_params
@@ -114,32 +113,27 @@ local function train(train_data, valid_data, encoders, decoders, generators)
       _G.encoder:training()
       _G.decoder:training()
       _G.generator:training()
-      return __threadid
     end)
 
     local batch_order = torch.randperm(#data) -- shuffle mini batch order
 
-    for i = 1, #data, parallel.count do
-      local total_size=0
+    for i = 1, #data do
+      local batch = data:get_batch(batch_order[i], true)
+      local batchs = data:distribute(batch, parallel.count)
 
-      local batchs = {}
       local losses = {}
-      for j = 1, parallel.count do
-        local batch
-        if i+j-1 <= #data then
-          batch = data:get_batch(batch_order[i+j-1], true)
-        end
-        table.insert(batchs, batch)
-        total_size = total_size + batch.size
-      end
 
-      parallel.launch(nil, function()
-        _G.batch = batchs[__threadid]
+      parallel.launch(nil, function(idx)
+        _G.batch = batchs[idx]
         if _G.batch == nil then
-          return __threadid, 0
+          return idx, 0
         end
+        -- send batch data to GPU
         cuda.convert(_G.batch)
-        _G.batch.total_size = total_size
+
+        _G.batch.total_size = batch.size
+
+        -- initialize LSTM and clear grad_params
         _G.encoder:forget()
         _G.decoder:forget()
         table_utils.zero(_G.grad_params)
@@ -160,7 +154,7 @@ local function train(train_data, valid_data, encoders, decoders, generators)
         local encoder_grad_output = decoder_grad_input
         encoder_grad_output[#encoder_grad_output] = grad_context
         _G.encoder:backward(encoder_grad_output)
-        return __threadid, loss
+        return idx, loss
       end,
       function(id, loss) losses[id]=loss end)
 
@@ -228,8 +222,8 @@ local function main()
   print('Loading data from ' .. opt.data .. '...')
   local dataset = torch.load(opt.data)
 
-  local train_data = Data.new(dataset.train, opt.max_batch_size)
-  local valid_data = Data.new(dataset.valid, opt.max_batch_size)
+  local train_data = Data.new(dataset.train, opt.max_batch_size * opt.nparallel)
+  local valid_data = Data.new(dataset.valid, opt.max_batch_size * opt.nparallel)
 
   print(string.format('Source vocab size: %d, Target vocab size: %d',
                       #dataset.src_dict, #dataset.targ_dict))
