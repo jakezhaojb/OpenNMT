@@ -12,6 +12,7 @@ local Evaluator = require 's2sa.evaluator'
 local Generator = require 's2sa.generator'
 local Optim = require 's2sa.optim'
 local table_utils = require 's2sa.table_utils'
+local parallel = require 's2sa.parallel'
 
 local cmd = torch.CmdLine()
 
@@ -61,9 +62,9 @@ cmd:text("")
 cmd:text("**Other options**")
 cmd:text("")
 
--- GPU
+-- GPU and parallelism
 cmd:option('-gpuid', -1, [[Which gpu to use (1-indexed). < 1 = use CPU]])
-cmd:option('-ngpu', 1, [[How many parallel GPU]])
+cmd:option('-nparallel', 1, [[How many parallel process]])
 cmd:option('-fallback_to_cpu', false, [[Fallback to CPU if no GPU available or can not use cuda/cudnn]])
 cmd:option('-cudnn', false, [[Whether to use cudnn or not]])
 
@@ -80,38 +81,26 @@ local function train(train_data, valid_data, encoders, decoders, generators)
   local num_params = 0
   local params = {}
   local grad_params = {}
+  local layers = {}
 
-  local layers = {encoders[1], decoders[1], generators[1]}
-
-  cutorch.setDevice(1)
   print('Initializing parameters...')
-  for i = 1, #layers do
-    local p, gp = layers[i].network:getParameters()
-    if opt.train_from:len() == 0 then
-      p:uniform(-opt.param_init, opt.param_init)
+  for j = 1, parallel.count do
+    cuda.setDevice(parallel.getGPU(j))
+    layers[j] = {encoders[j], decoders[j], generators[j]}
+    params[j] = {}
+    grad_params[j] = {}
+    for i = 1, #layers[j] do
+      local p, gp = layers[j][i].network:getParameters()
+      if opt.train_from:len() == 0 then
+        p:uniform(-opt.param_init, opt.param_init)
+      end
+      if i == 1 then
+        num_params = num_params + p:size(1)
+      end
+      params[j][i] = p
+      grad_params[j][i] = gp
     end
-    num_params = num_params + p:size(1)
-    params[i] = p
-    grad_params[i] = gp
-  end
-  print("Number of parameters: " .. num_params)
-
-  local num_params2 = 0
-  local params2 = {}
-  local grad_params2 = {}
-
-  if opt.ngpu == 2 then
-    cutorch.setDevice(1)
-    local layers2 = {encoders[2] , decoders[2], generators[2]}
-
-    for i = 1, #layers2 do
-      local p, gp = layers2[i].network:getParameters()
-      num_params2 = num_params2 + p:size(1)
-      params2[i] = p
-      grad_params2[i] = gp
-    end
-    print("Number of parameters: " .. num_params2)
-    cutorch.setDevice(1)
+    print("Number of parameters: " .. num_params)
   end
 
   local function train_batch(data, epoch, optim, checkpoint)
@@ -121,7 +110,7 @@ local function train(train_data, valid_data, encoders, decoders, generators)
       epoch = epoch
     })
 
-    for j = 1, opt.ngpu do
+    for j = 1, parallel.count do
       encoders[j]:training()
       decoders[j]:training()
       generators[j]:training()
@@ -129,67 +118,55 @@ local function train(train_data, valid_data, encoders, decoders, generators)
 
     local batch_order = torch.randperm(#data) -- shuffle mini batch order
 
-    for i = 1, #data, opt.ngpu do
+    for i = 1, #data, parallel.count do
       batchs = {}
-
-      cutorch.setDevice(1)
-      encoders[1]:forget()
-      decoders[1]:forget()
-      batchs[1] = data:get_batch(batch_order[i], 1)
-      table_utils.zero(grad_params)
-
-      -- forward encoder
-      local encoder_states, context = encoders[1]:forward(batchs[1])
-
-      -- forward decoder
-      local decoder_states, decoder_out = decoders[1]:forward(batchs[1], encoder_states)
-
-      -- forward and backward attention and generator
-      local decoder_grad_output, grad_context, loss = generators[1]:process(batchs[1], context, decoder_states, decoder_out)
-
-      -- backward decoder
-      local decoder_grad_input = decoders[1]:backward(decoder_grad_output)
-
-      -- backward encoder
-      local encoder_grad_output = decoder_grad_input
-      encoder_grad_output[#encoder_grad_output] = grad_context
-      encoders[1]:backward(encoder_grad_output)
-
-      if opt.ngpu == 2 then
-        cutorch.setDevice(2)
-
-        encoders[2]:forget()
-        decoders[2]:forget()
-        batchs[2] = data:get_batch(batch_order[i+1], 2)
-        table_utils.zero(grad_params2)
-
-        -- forward encoder
-        local encoder_states2, context2 = encoders[2]:forward(batchs[2])
-
-        -- forward decoder
-        local decoder_states2, decoder_out2 = decoders[2]:forward(batchs[2], encoder_states2)
-
-        -- forward and backward attention and generator
-        local decoder_grad_output2, grad_context2, loss2 = generators[2]:process(batchs[2], context2, decoder_states2, decoder_out2)
-
-        -- backward decoder
-        local decoder_grad_input2 = decoders[2]:backward(decoder_grad_output2)
-
-        -- backward encoder
-        local encoder_grad_output2 = decoder_grad_input2
-        encoder_grad_output2[#encoder_grad_output2] = grad_context2
-        encoders[2]:backward(encoder_grad_output2)
+      losses = {}
+      local totalbsize=0;
+      for j = 1, parallel.count do
+        cuda.setDevice(parallel.getGPU(j))
+        batchs[j] = data:get_batch(batch_order[i+j-1], j)
+        totalbsize = totalbsize + batchs[j].size
       end
 
-      if opt.ngpu == 3 then
+      for j = 1, parallel.count do
+        batchs[j].totalbsize = totalbsize
+
+        parallel.launch(j,function()
+          encoders[j]:forget()
+          decoders[j]:forget()
+          table_utils.zero(grad_params[j])
+
+          -- forward encoder
+          local encoder_states, context = encoders[j]:forward(batchs[j])
+
+          -- forward decoder
+          local decoder_states, decoder_out = decoders[j]:forward(batchs[j], encoder_states)
+
+          -- forward and backward attention and generator
+          local decoder_grad_output, grad_context, loss = generators[j]:process(batchs[j], context, decoder_states, decoder_out)
+          losses[j] = loss
+
+          -- backward decoder
+          local decoder_grad_input = decoders[j]:backward(decoder_grad_output)
+
+          -- backward encoder
+          local encoder_grad_output = decoder_grad_input
+          encoder_grad_output[#encoder_grad_output] = grad_context
+          encoders[j]:backward(encoder_grad_output)
+        end)
+      end
+
+      local loss = losses[1]
+      if opt.ngpu == 2 then
         cutorch.setDevice(1)
         for j = 1, #grad_params do
           local remote_grad_params=grad_params2[j]:clone()
-          grad_params[j]=(grad_params[j]*batchs[1].size+remote_grad_params[j]*batchs[2].size)/(batchs[1].size+batchs[2].size)
+          grad_params[j]:add(grad_params[j])
         end
+        loss = loss + losses[2]
       end
 
-      optim:update_params(params, grad_params, opt.max_grad_norm)
+      optim:update_params(params[1], grad_params[1], opt.max_grad_norm)
       if opt.ngpu == 2 then
         cutorch.setDevice(2)
         for j = 1, #params do
@@ -241,6 +218,7 @@ local function main()
   torch.manualSeed(opt.seed)
 
   cuda.init(opt)
+  parallel.init(opt)
 
   -- Create the data loader class.
   print('Loading data from ' .. opt.data .. '...')
@@ -260,23 +238,24 @@ local function main()
   local generators = {}
 
   if opt.train_from:len() == 0 then
-    for i = 1, opt.ngpu do
-      cutorch.setDevice(i)
-      table.insert(encoders, Encoder.new({
-                                pre_word_vecs = opt.pre_word_vecs_enc,
-                                fix_word_vecs = opt.fix_word_vecs_enc,
-                                vocab_size = #dataset.src_dict
-                             }, opt, i))
+    for j = 1, parallel.count do
+      parallel.launch(j, function()
+        table.insert(encoders, Encoder.new({
+                                  pre_word_vecs = opt.pre_word_vecs_enc,
+                                  fix_word_vecs = opt.fix_word_vecs_enc,
+                                  vocab_size = #dataset.src_dict
+                               }, opt, i))
 
-      table.insert(decoders, Decoder.new({
-                                pre_word_vecs = opt.pre_word_vecs_dec,
-                                fix_word_vecs = opt.fix_word_vec,
-                                vocab_size = #dataset.targ_dict
-                             }, opt, i))
-
-      table.insert(generators, Generator.new({
+        table.insert(decoders, Decoder.new({
+                                  pre_word_vecs = opt.pre_word_vecs_dec,
+                                  fix_word_vecs = opt.fix_word_vec,
                                   vocab_size = #dataset.targ_dict
-                                }, opt))
+                               }, opt, i))
+
+        table.insert(generators, Generator.new({
+                                    vocab_size = #dataset.targ_dict
+                                  }, opt))
+      end)
     end
   else
     assert(path.exists(opt.train_from), 'checkpoint path invalid')
@@ -290,9 +269,11 @@ local function main()
     generator = model[3]
   end
 
-  for i = 1, opt.ngpu do
-    generators[i]:build_criterion(#dataset.targ_dict)
-    cuda.convert({encoders[i].network, decoders[i].network, generators[i].network, generators[i].criterion}, i)
+  for j = 1, parallel.count do
+    parallel.launch(j, function()
+      generators[j]:build_criterion(#dataset.targ_dict)
+      cuda.convert({encoders[j].network, decoders[j].network, generators[j].network, generators[j].criterion})
+    end)
   end
 
   train(train_data, valid_data, encoders, decoders, generators)
