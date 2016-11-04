@@ -77,8 +77,8 @@ function Generator:process(batch, context, decoder_states, decoder_out)
 
     local generator_output = self.network:forward({out, context})
 
-    loss = loss + self.criterion:forward(generator_output, batch.target_output[{{}, t}]) / batch.size
-    local criterion_grad_input = self.criterion:backward(generator_output, batch.target_output[{{}, t}]) / batch.size
+    loss = loss + self.criterion:forward(generator_output, batch.target_output[{{}, t}]) / batch.totalbsize
+    local criterion_grad_input = self.criterion:backward(generator_output, batch.target_output[{{}, t}]) / batch.totalbsize
 
     local generator_grad_input = self.network:backward({out, context}, criterion_grad_input)
 
