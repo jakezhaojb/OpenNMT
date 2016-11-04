@@ -15,7 +15,7 @@ function Parallel.init(args)
    if cuda.activated then
       Parallel.count = args.nparallel
       Parallel.gpus = cuda.getGPUs(args.nparallel)
-      if Parallel.count >= 1 then
+      if Parallel.count > 1 then
          local threads = require 'threads'
          threads.Threads.serialization('threads.sharedserialize')
          local thegpus = Parallel.gpus
@@ -35,6 +35,11 @@ function Parallel.init(args)
             end
          ) -- dedicate threads to GPUs
          Parallel._pool:specific(true)
+      else
+         Parallel._G = {}
+         Parallel._G.Decoder = require 's2sa.decoder'
+         Parallel._G.Encoder = require 's2sa.encoder'
+         Parallel._G.Generator = require 's2sa.generator'
       end
    end
 end
@@ -47,24 +52,21 @@ function Parallel.getGPU(i)
 end
 
 function Parallel.launch(label, closure, endcallback)
+   endcallback = endcallback or function() end
    if label ~= nil then
       print("START",label)
    end
    for j = 1, Parallel.count do
       if Parallel._pool == nil then
-         closure(j)
-         if endcallback ~= nil then
-            endcallback()
-         end
+         local _G = Parallel._G
+         endcallback(closure(j))
       else
-         if endcallback == nil then
-            Parallel._pool:addjob(j, function() closure(j) end)
-         else
-            Parallel._pool:addjob(j, function() return closure(j) end, endcallback)
-         end
+         Parallel._pool:addjob(j, function() return closure(j) end, endcallback)
       end
    end
-   Parallel._pool:synchronize()
+   if Parallel._pool then
+      Parallel._pool:synchronize()
+   end
    if label ~= nil then
       print("DONE",label)
    end

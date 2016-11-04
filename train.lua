@@ -78,6 +78,7 @@ local function train(train_data, valid_data, encoders, decoders, generators)
   local num_params = 0
   local params = {}
   local grad_params = {}
+  local __threadid = 1 -- important to keep for closure when non using threads
 
   parallel.launch('Initializing parameters', function()
     _G.layers = { _G.encoder, _G.decoder, _G.generator}
