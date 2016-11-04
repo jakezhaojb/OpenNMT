@@ -15,11 +15,13 @@ function Bookkeeper:__init(args)
   self.num_words_target = 0
 end
 
-function Bookkeeper:update(batch, loss)
-  self.num_words_source = self.num_words_source + batch.size * batch.source_length
-  self.num_words_target = self.num_words_target + batch.size * batch.target_length
-  self.train_nonzeros = self.train_nonzeros + batch.target_non_zeros
-  self.train_loss = self.train_loss + loss * batch.size
+function Bookkeeper:update(batches, losses)
+  for i = 1, #batches do
+    self.num_words_source = self.num_words_source + batches[i].size * batches[i].source_length
+    self.num_words_target = self.num_words_target + batches[i].size * batches[i].target_length
+    self.train_nonzeros = self.train_nonzeros + batches[i].target_non_zeros
+    self.train_loss = self.train_loss + losses[i] * batches[i].size
+  end
 end
 
 function Bookkeeper:get_time()

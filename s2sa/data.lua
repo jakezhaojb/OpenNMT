@@ -55,7 +55,7 @@ function data:__len__()
   return #self.batch_range
 end
 
-function data:get_batch(idx, gpuIdx)
+function data:get_batch(idx, nocuda)
   local batch = {}
 
   local range_start = self.batch_range[idx]["begin"]
@@ -81,9 +81,11 @@ function data:get_batch(idx, gpuIdx)
     batch.target_output[batch_idx]:narrow(1, 1, target_length):copy(target_output_view)
   end
 
-  batch.source_input = cuda.convert(batch.source_input, gpuIdx)
-  batch.target_input = cuda.convert(batch.target_input, gpuIdx)
-  batch.target_output = cuda.convert(batch.target_output, gpuIdx)
+  if nocuda then
+    batch.source_input = cuda.convert(batch.source_input)
+    batch.target_input = cuda.convert(batch.target_input)
+    batch.target_output = cuda.convert(batch.target_output)
+  end
 
   return batch
 end

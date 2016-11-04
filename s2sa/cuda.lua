@@ -8,7 +8,7 @@ local Cuda = {
   gpuid = 0
 }
 
-function Cuda.init(opt)
+function Cuda.init(opt, gpuIdx)
   Cuda.activated = opt.gpuid > 0
   Cuda.gpuid = opt.gpuid
 
@@ -20,9 +20,14 @@ function Cuda.init(opt)
         require 'cudnn'
         Cuda.nn = cudnn
       end
-      -- allow memory access between devices
-      cutorch.getKernelPeerToPeerAccess(true)
-      cutorch.manualSeedAll(opt.seed)
+      if gpuIdx == nil then
+        -- allow memory access between devices
+        cutorch.getKernelPeerToPeerAccess(true)
+        cutorch.manualSeedAll(opt.seed)
+        cutorch.setDevice(opt.gpuid)
+      else
+        cutorch.setDevice(gpuIdx)
+      end
     end)
 
     if err then
@@ -32,8 +37,6 @@ function Cuda.init(opt)
       else
         error(err)
       end
-    else
-       print('Using GPU ' .. opt.gpuid .. '.')
     end
   end
 end
