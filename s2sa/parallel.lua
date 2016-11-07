@@ -29,6 +29,7 @@ function Parallel.init(args)
                _G.Generator = require 's2sa.generator'
                require 's2sa.dict'
                require 's2sa.data'
+               require 's2sa.MMopt'
                print('starting thread ', threadid, 'on GPU ' .. thegpus[threadid])
                cudathread = require 's2sa.cuda'
                cudathread.init(args, thegpus[threadid])
